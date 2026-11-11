@@ -525,15 +525,15 @@ async function startCamera() {
   await new Promise(r => { if (video.videoWidth) r(); else video.addEventListener("loadedmetadata", r, { once: true }); });
   sizeToVideo();
 }
-function sizeToVideo() {
-  vw = video.videoWidth; vh = video.videoHeight; if (!vw) return;
+function sizeToVideo(w = video.videoWidth, h = video.videoHeight) {
+  vw = w; vh = h; if (!vw) return;
   const rs = Math.min(1.5, 1280 / Math.max(vw, vh) * Math.min(devicePixelRatio, 2));
   renderer.setPixelRatio(1); renderer.setSize(Math.round(vw * rs), Math.round(vh * rs), false);
   focal = Math.max(vw, vh) * 0.78;                       // typical phone main camera (~65 deg on the long side)
   camera.fov = THREE.MathUtils.radToDeg(2 * Math.atan(vh / (2 * focal)));
   camera.aspect = vw / vh; camera.updateProjectionMatrix();
 }
-video.addEventListener("resize", sizeToVideo);
+video.addEventListener("resize", () => sizeToVideo());
 
 /* ---------- QR detection: corner points in video pixels (TL, TR, BR, BL) ---------- */
 let native = null;
@@ -593,6 +593,7 @@ function poseFrom(corners) {
 }
 
 /* ---------- loop ---------- */
+const demo = new URLSearchParams(location.search).has("demo");   // preview without a camera
 let running = false, busy = false, hasPose = false, lastSeen = -10, now = 0, tRise = -1, prev = performance.now();
 const one = new THREE.Vector3();
 async function track() {
@@ -611,7 +612,7 @@ function frame(ts) {
   requestAnimationFrame(frame);
   const dt = Math.min((ts - prev) / 1000, 0.05); prev = ts;
   if (!running) return;
-  now += dt; track();
+  now += dt; if (demo) lastSeen = now; else track();
   const seen = hasPose && now - lastSeen < 1.2;
   site.visible = seen;
   hintEl.classList.toggle("hide", seen); frameEl.classList.toggle("hide", seen);
@@ -646,7 +647,11 @@ goBtn.addEventListener("click", async () => {
     errEl.classList.add("show"); goBtn.disabled = false;
   }
 });
-goBtn.click();   // ask for the camera straight away; the button stays as a fallback if the browser refuses
+if (demo) {
+  sizeToVideo(innerWidth, innerHeight);
+  tPos.set(0, -2.2, -17); tQuat.setFromEuler(new THREE.Euler(0.5, -0.6, 0)); pos.copy(tPos); quat.copy(tQuat);
+  hasPose = true; tRise = 0; running = true; startEl.classList.add("hide");
+} else goBtn.click();   // ask for the camera straight away; the button stays as a fallback if the browser refuses
 </script>
 </body>
 </html>
