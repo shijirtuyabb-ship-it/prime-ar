@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="mn">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="color-scheme" content="dark" />
+<title>Prime Business Center — AR</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js" } }
+</script>
+<style>
+:root { --bg:#0b0b11; --line:rgba(255,255,255,0.08); --muted:#a3a3b2; --gold:#c9a45c; --gold-2:#dbb975 }
+* { box-sizing:border-box; margin:0; padding:0 }
+html, body { height:100%; background:var(--bg); color:#fff; overflow:hidden }
+body { font-family:"Inter", system-ui, -apple-system, "Segoe UI", sans-serif; -webkit-font-smoothing:antialiased }
+#cam, #stage { position:fixed; inset:0; width:100%; height:100%; object-fit:cover; display:block }
+#cam { background:#000 }
+#stage { pointer-events:none }
+.top { position:fixed; z-index:5; top:calc(env(safe-area-inset-top) + 14px); left:16px; display:flex; align-items:center; gap:9px; padding:8px 14px 8px 9px; border-radius:999px; background:rgba(12,12,18,.6); -webkit-backdrop-filter:blur(12px); backdrop-filter:blur(12px); border:1px solid var(--line); font-weight:600; font-size:15px }
+.orb { width:22px; height:22px; border-radius:6px; background:linear-gradient(145deg,#f0d9a4,#c9a45c 45%,#8a6a2c) }
+.hint { position:fixed; z-index:5; left:50%; bottom:calc(env(safe-area-inset-bottom) + 26px); transform:translateX(-50%); max-width:calc(100% - 32px); padding:12px 18px; border-radius:999px; background:rgba(12,12,18,.66); -webkit-backdrop-filter:blur(12px); backdrop-filter:blur(12px); border:1px solid var(--line); font-size:15px; font-weight:500; text-align:center; transition:opacity .4s }
+.hint.hide { opacity:0 }
+.frame { position:fixed; z-index:4; left:50%; top:50%; width:min(62vw,62vh); aspect-ratio:1; transform:translate(-50%,-50%); pointer-events:none; transition:opacity .4s }
+.frame.hide { opacity:0 }
+.frame i { position:absolute; width:16%; height:16%; border:2px solid var(--gold-2); filter:drop-shadow(0 0 6px rgba(219,185,117,.6)) }
+.frame i:nth-child(1) { top:0; left:0; border-right:0; border-bottom:0; border-top-left-radius:14px }
+.frame i:nth-child(2) { top:0; right:0; border-left:0; border-bottom:0; border-top-right-radius:14px }
+.frame i:nth-child(3) { bottom:0; left:0; border-right:0; border-top:0; border-bottom-left-radius:14px }
+.frame i:nth-child(4) { bottom:0; right:0; border-left:0; border-top:0; border-bottom-right-radius:14px }
+.start { position:fixed; inset:0; z-index:10; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; padding:32px 24px; background:radial-gradient(120% 80% at 50% 0%, #15161f 0%, var(--bg) 60%) }
+.start.hide { display:none }
+.start h1 { font-size:clamp(34px,9vw,54px); line-height:1.05; font-weight:700; letter-spacing:-0.025em }
+.start p { margin-top:16px; color:var(--muted); font-size:17px; line-height:1.55; max-width:360px }
+.start button { margin-top:28px; height:56px; padding:0 34px; border:0; border-radius:999px; background:linear-gradient(180deg,var(--gold-2),var(--gold)); color:#15120a; font:600 18px "Inter",system-ui,sans-serif; box-shadow:inset 0 1px 0 rgba(255,255,255,.3); cursor:pointer }
+.start .err { color:#ffb4a8; display:none }
+.start .err.show { display:block }
+</style>
+</head>
+<body>
+<video id="cam" playsinline muted autoplay></video>
+<canvas id="stage" aria-hidden="true"></canvas>
+<div class="top"><span class="orb"></span>Prime Business Center</div>
+<div class="frame hide" id="frame"><i></i><i></i><i></i><i></i></div>
+<div class="hint hide" id="hint">Камераа QR код руу чиглүүлнэ үү</div>
+
+<div class="start" id="start">
+  <h1>Prime<br />Business Center</h1>
+  <p>Камераа асаагаад QR код руу чиглүүлэхэд барилга QR дээрээс босож харагдана.</p>
+  <button id="go" type="button">Камер асаах</button>
+  <p class="err" id="err"></p>
+</div>
+
+<script type="module">
+import * as THREE from "three";
+
+const video = document.getElementById("cam"), canvas = document.getElementById("stage");
+const startEl = document.getElementById("start"), goBtn = document.getElementById("go"), errEl = document.getElementById("err");
+const hintEl = document.getElementById("hint"), frameEl = document.getElementById("frame");
+
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, powerPreference: "high-performance" });
+renderer.setClearColor(0x000000, 0);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.localClippingEnabled = true;
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 500);   // sits at the origin, looks down -Z
+
+/* ---------- helpers ---------- */
+function rng(seed) { return () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+function canvasTex(c) { const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8; return t; }
+function radialTexture(stops, size = 256) {
+  const c = document.createElement("canvas"); c.width = c.height = size;
+  const g = c.getContext("2d"), gr = g.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  stops.forEach(([o, col]) => gr.addColorStop(o, col));
+  g.fillStyle = gr; g.fillRect(0, 0, size, size);
+  return canvasTex(c);
+}
+function rrShape(w, d, r) {
+  const s = new THREE.Shape(), x = -w / 2, y = -d / 2, P = Math.PI;
+  s.moveTo(x + r, y); s.lineTo(x + w - r, y); s.absarc(x + w - r, y + r, r, -P / 2, 0, false);
+  s.lineTo(x + w, y + d - r); s.absarc(x + w - r, y + d - r, r, 0, P / 2, false);
+  s.lineTo(x + r, y + d); s.absarc(x + r, y + d - r, r, P / 2, P, false);
+  s.lineTo(x, y + r); s.absarc(x + r, y + r, r, P, P * 1.5, false);
+  return s;
+}
+function slab(w, d, r, h) {
+  const g = new THREE.ExtrudeGeometry(rrShape(w, d, r), { depth: h, bevelEnabled: false, curveSegments: 12 });
+  g.rotateX(-Math.PI / 2); return g;           // base at y=0, top at y=h
+}
+
+const glowTex = radialTexture([[0, "rgba(150,190,255,1)"], [0.25, "rgba(80,130,255,.55)"], [0.6, "rgba(50,90,230,.12)"], [1, "rgba(30,60,200,0)"]]);
+const warmTex = radialTexture([[0, "rgba(255,225,170,1)"], [0.3, "rgba(219,185,117,.5)"], [0.65, "rgba(201,164,92,.1)"], [1, "rgba(201,164,92,0)"]]);
+
+/* ---------- environment: dark studio with round softboxes ---------- */
+{
+  const env = new THREE.Scene(); env.background = new THREE.Color("#030305");
+  const box = (col, w, h, pos, k) => {
+    const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.5, 32, 16), new THREE.MeshBasicMaterial({ color: new THREE.Color(col).multiplyScalar(k) }));
+    mesh.scale.set(w, h, 0.3); mesh.position.set(...pos); mesh.lookAt(0, 0, 0); env.add(mesh);
+  };
+  box("#ffffff", 5, 3.2, [-3, 4.5, 4], 3.2);
+  box("#ffffff", 1.2, 6, [6, 0.5, 2], 1.1);
+  box("#ffffff", 3, 1, [1.5, 5, -1], 0.8);
+  box("#3d7bff", 4, 5, [-5, 0, -4], 1.0);
+  box("#3d7bff", 4, 5, [5, 0, -4], 1.0);
+  box("#ffb86b", 6, 3, [0, -5, 1], 0.3);
+  const pm = new THREE.PMREMGenerator(renderer);
+  scene.environment = pm.fromScene(env, 0.02).texture;
+  scene.environmentIntensity = 1.0;
+}
+scene.add(new THREE.HemisphereLight(0xdfe6f5, 0x181420, 1.5));
+const sun = new THREE.DirectionalLight(0xfff0da, 1.7); sun.position.set(-3, 5, 4); scene.add(sun);
+
+/* ---------- building constants ---------- */
+const FLOORS = 18, FH = 0.21, BH = FLOORS * FH;      // tower height 3.78
+const TW = 2.0, TD = 1.9, COL = 0.15;
+const clip = new THREE.Plane(new THREE.Vector3(0, -1, 0), 0);   // rises during the intro
+const reg = mat => { mat.clippingPlanes = [clip]; return mat; };
+
+/* ---------- textures ---------- */
+function facadeTex(cols, floors, blank = [], seed = 1) {
+  const cw = 48, ch = 64, W = cols * cw, H = floors * ch, r = rng(seed);
+  const c = document.createElement("canvas"); c.width = W; c.height = H; const g = c.getContext("2d");
+  const e = document.createElement("canvas"); e.width = W; e.height = H; const ge = e.getContext("2d");
+  g.fillStyle = "#cbb7a0"; g.fillRect(0, 0, W, H);
+  for (let i = 0; i < W * H / 90; i++) { g.fillStyle = `rgba(${r() < .5 ? "255,240,220" : "70,50,30"},${r() * .05})`; g.fillRect(r() * W, r() * H, 6 + r() * 18, 2 + r() * 6); }
+  ge.fillStyle = "#000"; ge.fillRect(0, 0, W, H);
+  for (let f = 0; f < floors; f++) {
+    g.fillStyle = "rgba(60,40,20,.10)"; g.fillRect(0, f * ch, W, 1.5);
+    for (let col = 0; col < cols; col++) {
+      if (blank.includes(col)) continue;
+      const x = col * cw + 11, y = f * ch + 12, w = 26, h = 42;
+      g.fillStyle = "#8f7d69"; g.fillRect(x - 2, y - 2, w + 4, h + 4);
+      const lit = r() < 0.2;
+      if (lit) {
+        const gr = g.createLinearGradient(0, y, 0, y + h); gr.addColorStop(0, "#ffe2b0"); gr.addColorStop(1, "#f2b765");
+        g.fillStyle = gr; g.fillRect(x, y, w, h);
+        ge.fillStyle = r() < .5 ? "#ffc47a" : "#ffd9a0"; ge.fillRect(x, y, w, h);
+      } else {
+        const gr = g.createLinearGradient(x, y, x + w, y + h); gr.addColorStop(0, "#1d3147"); gr.addColorStop(.5, "#0e1824"); gr.addColorStop(1, "#16263a");
+        g.fillStyle = gr; g.fillRect(x, y, w, h);
+      }
+      g.fillStyle = "rgba(0,0,0,.35)"; g.fillRect(x, y + h / 2 - 1, w, 1.5);
+    }
+  }
+  return { map: canvasTex(c), emissiveMap: canvasTex(e) };
+}
+function glassCellTex() {             // one pane, tiled over the tower body
+  const c = document.createElement("canvas"); c.width = 64; c.height = 96; const g = c.getContext("2d");
+  const gr = g.createLinearGradient(0, 0, 64, 96); gr.addColorStop(0, "#1a4d73"); gr.addColorStop(.55, "#0d2c47"); gr.addColorStop(1, "#143d5e");
+  g.fillStyle = gr; g.fillRect(0, 0, 64, 96);
+  g.fillStyle = "#0a1d30"; g.fillRect(0, 0, 64, 14);
+  g.fillStyle = "#06101b"; g.fillRect(0, 0, 3, 96); g.fillRect(0, 0, 64, 3);
+  const t = canvasTex(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; return t;
+}
+function glassBayTex(cols, floors, seed = 7) {   // the big curved curtain wall
+  const cw = 40, ch = 64, W = cols * cw, H = floors * ch, r = rng(seed);
+  const c = document.createElement("canvas"); c.width = W; c.height = H; const g = c.getContext("2d");
+  const gr = g.createLinearGradient(0, 0, 0, H); gr.addColorStop(0, "#1b5078"); gr.addColorStop(.45, "#0e3353"); gr.addColorStop(1, "#0a2238");
+  g.fillStyle = gr; g.fillRect(0, 0, W, H);
+  for (let i = 0; i < 16; i++) {       // faceted sky reflections
+    const x = r() * W, y = r() * H, s = 60 + r() * 160;
+    g.fillStyle = `rgba(${r() < .5 ? "130,200,240" : "20,60,100"},${.08 + r() * .14})`;
+    g.beginPath(); g.moveTo(x, y); g.lineTo(x + s * (r() - .3), y + s * 1.6); g.lineTo(x - s * (r() * .8), y + s * (0.6 + r())); g.closePath(); g.fill();
+  }
+  g.fillStyle = "rgba(4,12,22,.9)";
+  for (let i = 0; i <= cols; i++) g.fillRect(i * cw - 1, 0, 2, H);
+  for (let f = 0; f <= floors; f++) g.fillRect(0, f * ch - 1, W, 2.5);
+  return canvasTex(c);
+}
+function podiumTex(cols, floors) {
+  const cw = 44, ch = 64, pad = 14, W = cols * cw + pad * 2, H = floors * ch + pad * 2;
+  const c = document.createElement("canvas"); c.width = W; c.height = H; const g = c.getContext("2d");
+  g.fillStyle = "#c2ad96"; g.fillRect(0, 0, W, H);
+  const gr = g.createLinearGradient(0, 0, W, H); gr.addColorStop(0, "#1a4d73"); gr.addColorStop(.6, "#0c2a44"); gr.addColorStop(1, "#134063");
+  g.fillStyle = gr; g.fillRect(pad, pad, W - pad * 2, H - pad * 2);
+  g.fillStyle = "rgba(4,12,22,.9)";
+  for (let i = 0; i <= cols; i++) g.fillRect(pad + i * cw - 1, pad, 2, H - pad * 2);
+  for (let f = 0; f <= floors; f++) g.fillRect(pad, pad + f * ch - 1, W - pad * 2, 2.5);
+  return canvasTex(c);
+}
+function signTex(text) {
+  const c = document.createElement("canvas"); c.width = 512; c.height = 160; const g = c.getContext("2d");
+  g.font = "700 104px Georgia, 'Times New Roman', serif"; g.textAlign = "center"; g.textBaseline = "middle";
+  g.fillStyle = "#f3d596"; g.fillText(text.split("").join(" "), 256, 86);
+  return canvasTex(c);
+}
+function parkingTex() {
+  const c = document.createElement("canvas"); c.width = 512; c.height = 200; const g = c.getContext("2d");
+  g.fillStyle = "#1c1d24"; g.fillRect(0, 0, 512, 200);
+  g.fillStyle = "rgba(255,255,255,.55)";
+  for (let i = 0; i <= 8; i++) g.fillRect(16 + i * 60, 20, 3, 100);
+  return canvasTex(c);
+}
+
+/* ---------- rig ---------- */
+const site = new THREE.Group(); scene.add(site);        // rotates with the pointer
+const building = new THREE.Group(); site.add(building);
+
+/* materials */
+const stoneMat = reg(new THREE.MeshStandardMaterial({ color: "#c2ad96", roughness: 0.85 }));
+const cellTex = glassCellTex(); cellTex.repeat.set(1 / COL, 1 / FH);
+const bodyMat = reg(new THREE.MeshPhysicalMaterial({ map: cellTex, metalness: 0.55, roughness: 0.16, clearcoat: 1, clearcoatRoughness: 0.1, envMapIntensity: 1.3 }));
+const roofMat = reg(new THREE.MeshStandardMaterial({ color: "#2f3848", roughness: 0.55, metalness: 0.2 }));
+const darkMat = reg(new THREE.MeshStandardMaterial({ color: "#15171d", roughness: 0.5, metalness: 0.4 }));
+
+/* tower body (glass, rounded corners) */
+building.add(new THREE.Mesh(slab(TW, TD, 0.16, BH), bodyMat));
+
+/* stone panels with window grids */
+let seed = 11;
+function panel(w, cols, blank) {
+  const t = facadeTex(cols, FLOORS, blank, seed++);
+  const front = reg(new THREE.MeshStandardMaterial({ map: t.map, emissiveMap: t.emissiveMap, emissive: 0xffffff, emissiveIntensity: 1.5, roughness: 0.8 }));
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, BH, 0.06), [stoneMat, stoneMat, stoneMat, stoneMat, front, stoneMat]);
+  mesh.position.y = BH / 2; return mesh;
+}
+const pFL = panel(0.45, 3); pFL.position.set(-0.625, BH / 2, TD / 2); building.add(pFL);              // front, left of the glass
+const pFR = panel(0.75, 5, [2]); pFR.position.set(0.475, BH / 2, TD / 2); building.add(pFR);          // front, right (plain strip in the middle)
+const pL = panel(1.5, 10); pL.rotation.y = -Math.PI / 2; pL.position.set(-TW / 2, BH / 2, 0); building.add(pL);
+const pR = panel(1.5, 10); pR.rotation.y = Math.PI / 2; pR.position.set(TW / 2, BH / 2, 0); building.add(pR);
+const pB = panel(1.65, 11); pB.rotation.y = Math.PI; pB.position.set(0, BH / 2, -TD / 2); building.add(pB);
+
+/* curved glass curtain wall on the front */
+{
+  const R = 0.32, half = Math.asin(0.25 / R);
+  const g = new THREE.CylinderGeometry(R, R, BH, 40, 1, true, -half, half * 2);
+  const mat = reg(new THREE.MeshPhysicalMaterial({ map: glassBayTex(6, FLOORS), metalness: 0.6, roughness: 0.12, clearcoat: 1, clearcoatRoughness: 0.06, envMapIntensity: 1.6 }));
+  const bay = new THREE.Mesh(g, mat); bay.position.set(-0.15, BH / 2, TD / 2 - 0.2); building.add(bay);
+}
+
+/* roof slab */
+{ const roof = new THREE.Mesh(slab(TW + 0.16, TD + 0.16, 0.24, 0.08), roofMat); roof.position.y = BH; building.add(roof); }
+
+/* podium: 4 glass floors with a roof terrace */
+const PH = 4 * FH, PW = 1.15, PD = 1.7, PX = -TW / 2 - PW / 2, PZ = 0.25;
+{
+  const gl = tex => reg(new THREE.MeshPhysicalMaterial({ map: tex, metalness: 0.5, roughness: 0.16, clearcoat: 1, clearcoatRoughness: 0.1, envMapIntensity: 1.3 }));
+  const terr = reg(new THREE.MeshStandardMaterial({ color: "#8c5d47", roughness: 0.9 }));
+  const pod = new THREE.Mesh(new THREE.BoxGeometry(PW, PH, PD), [stoneMat, gl(podiumTex(9, 4)), terr, stoneMat, gl(podiumTex(6, 4)), stoneMat]);
+  pod.position.set(PX, PH / 2, PZ); building.add(pod);
+  // parapet
+  const par = (w, d, x, z) => { const p = new THREE.Mesh(new THREE.BoxGeometry(w, 0.05, d), stoneMat); p.position.set(PX + x, PH + 0.025, PZ + z); building.add(p); };
+  par(PW, 0.04, 0, PD / 2 - 0.02); par(PW, 0.04, 0, -PD / 2 + 0.02); par(0.04, PD, -PW / 2 + 0.02, 0);
+  // terrace garden
+  const lawn = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.02, 32), reg(new THREE.MeshStandardMaterial({ color: "#3f8a4a", roughness: 0.95 })));
+  lawn.position.set(PX, PH + 0.012, PZ - 0.25); building.add(lawn);
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(0.24, 0.018, 8, 40), reg(new THREE.MeshStandardMaterial({ color: "#d9cbb8", roughness: 0.8 })));
+  ring.rotation.x = Math.PI / 2; ring.position.set(PX, PH + 0.02, PZ - 0.25); building.add(ring);
+  const hut = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.13, 0.2), darkMat); hut.position.set(PX + 0.3, PH + 0.065, PZ + 0.6); building.add(hut);
+}
+
+/* entrance canopy + signs */
+{
+  const can = new THREE.Mesh(slab(1.0, 0.42, 0.12, 0.035), darkMat); can.position.set(-0.15, 0.3, TD / 2 + 0.2); building.add(can);
+  const lightStrip = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.008, 0.03), reg(new THREE.MeshBasicMaterial({ color: new THREE.Color(2.2, 1.7, 0.9), toneMapped: false })));
+  lightStrip.position.set(-0.15, 0.296, TD / 2 + 0.36); building.add(lightStrip);
+  const st = signTex("PRIME");
+  const sm = () => reg(new THREE.MeshBasicMaterial({ map: st, transparent: true, depthWrite: false, toneMapped: false, color: new THREE.Color(1.35, 1.1, 0.7) }));
+  const top = new THREE.Mesh(new THREE.PlaneGeometry(0.34, 0.106), sm()); top.position.set(0.475, BH - 0.1, TD / 2 + 0.034); building.add(top);
+  const low = new THREE.Mesh(new THREE.PlaneGeometry(0.42, 0.13), sm()); low.position.set(0.55, 0.42, TD / 2 + 0.034); building.add(low);
+}
+
+/* scan ring that rides the reveal edge */
+const scanRing = new THREE.Group(); site.add(scanRing);
+{
+  const mk = (w, d, r, o) => {
+    const pts = rrShape(w, d, r).getPoints(20).map(p => new THREE.Vector3(p.x, 0, p.y));
+    return new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color: new THREE.Color(2.6, 2.0, 1.0), transparent: true, opacity: o, toneMapped: false }));
+  };
+  scanRing.add(mk(TW + 0.5, TD + 0.5, 0.36, 1), mk(TW + 0.75, TD + 0.75, 0.46, 0.35));
+  const glow = new THREE.Mesh(new THREE.PlaneGeometry(4.2, 4.2), new THREE.MeshBasicMaterial({ map: warmTex, transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false }));
+  glow.rotation.x = -Math.PI / 2; scanRing.add(glow);
+}
+
+
+/* soft contact shadow so the tower sits on the paper */
+{
+  const sh = new THREE.Mesh(new THREE.PlaneGeometry(5.4, 5.0), new THREE.MeshBasicMaterial({ map: radialTexture([[0, "rgba(0,0,0,.55)"], [0.55, "rgba(0,0,0,.28)"], [1, "rgba(0,0,0,0)"]]), transparent: true, depthWrite: false, toneMapped: false }));
+  sh.rotation.x = -Math.PI / 2; sh.position.set(-0.3, 0.004, 0.1); site.add(sh);
+}
+site.matrixAutoUpdate = false; site.visible = false;
+
+/* ---------- camera ---------- */
+let vw = 0, vh = 0, focal = 1;
+async function startCamera() {
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } } });
+  video.srcObject = stream; await video.play();
+  await new Promise(r => { if (video.videoWidth) r(); else video.addEventListener("loadedmetadata", r, { once: true }); });
+  sizeToVideo();
+}
+function sizeToVideo() {
+  vw = video.videoWidth; vh = video.videoHeight; if (!vw) return;
+  const rs = Math.min(1.5, 1280 / Math.max(vw, vh) * Math.min(devicePixelRatio, 2));
+  renderer.setPixelRatio(1); renderer.setSize(Math.round(vw * rs), Math.round(vh * rs), false);
+  focal = Math.max(vw, vh) * 0.78;                       // typical phone main camera (~65 deg on the long side)
+  camera.fov = THREE.MathUtils.radToDeg(2 * Math.atan(vh / (2 * focal)));
+  camera.aspect = vw / vh; camera.updateProjectionMatrix();
+}
+video.addEventListener("resize", sizeToVideo);
+
+/* ---------- QR detection: corner points in video pixels (TL, TR, BR, BL) ---------- */
+let native = null;
+if ("BarcodeDetector" in window) { try { native = new BarcodeDetector({ formats: ["qr_code"] }); } catch (e) { native = null; } }
+const work = document.createElement("canvas"), wctx = work.getContext("2d", { willReadFrequently: true });
+async function detect() {
+  if (native) {
+    try { const r = await native.detect(video); if (r.length && r[0].cornerPoints && r[0].cornerPoints.length === 4) return r[0].cornerPoints.map(p => [p.x, p.y]); if (r.length === 0) return null; }
+    catch (e) { native = null; }
+  }
+  if (typeof jsQR !== "function") return null;
+  const s = Math.min(1, 640 / Math.max(vw, vh)), cw = Math.round(vw * s), ch = Math.round(vh * s);
+  if (work.width !== cw) { work.width = cw; work.height = ch; }
+  wctx.drawImage(video, 0, 0, cw, ch);
+  const r = jsQR(wctx.getImageData(0, 0, cw, ch).data, cw, ch, { inversionAttempts: "dontInvert" });
+  if (!r) return null;
+  const L = r.location;
+  return [L.topLeftCorner, L.topRightCorner, L.bottomRightCorner, L.bottomLeftCorner].map(p => [p.x / s, p.y / s]);
+}
+
+/* ---------- pose from the 4 corners (planar homography) ---------- */
+const HALF = 2.1;                                         // the QR spans 4.2 units, tower footprint is 2.0
+const SRC = [[-HALF, -HALF], [HALF, -HALF], [HALF, HALF], [-HALF, HALF]];   // (x, z) on the paper
+function homography(src, dst) {
+  const M = [];
+  for (let i = 0; i < 4; i++) {
+    const [u, v] = src[i], [x, y] = dst[i];
+    M.push([u, v, 1, 0, 0, 0, -u * x, -v * x, x]);
+    M.push([0, 0, 0, u, v, 1, -u * y, -v * y, y]);
+  }
+  for (let c = 0; c < 8; c++) {
+    let p = c; for (let r = c + 1; r < 8; r++) if (Math.abs(M[r][c]) > Math.abs(M[p][c])) p = r;
+    if (Math.abs(M[p][c]) < 1e-10) return null;
+    [M[c], M[p]] = [M[p], M[c]];
+    for (let r = 0; r < 8; r++) if (r !== c) { const f = M[r][c] / M[c][c]; for (let k = c; k < 9; k++) M[r][k] -= f * M[c][k]; }
+  }
+  const h = M.map((row, i) => row[8] / row[i]);
+  return [h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], 1];
+}
+const tPos = new THREE.Vector3(), tQuat = new THREE.Quaternion(), pos = new THREE.Vector3(), quat = new THREE.Quaternion();
+const vX = new THREE.Vector3(), vY = new THREE.Vector3(), vZ = new THREE.Vector3(), basis = new THREE.Matrix4();
+function poseFrom(corners) {
+  const h = homography(SRC, corners); if (!h) return false;
+  const cx = vw / 2, cy = vh / 2;
+  const col = j => new THREE.Vector3((h[j] - cx * h[6 + j]) / focal, (h[3 + j] - cy * h[6 + j]) / focal, h[6 + j]);
+  const b1 = col(0), b2 = col(1), b3 = col(2);
+  let lam = 2 / (b1.length() + b2.length()); if (b3.z * lam < 0) lam = -lam;
+  vX.copy(b1).multiplyScalar(lam).normalize();
+  vZ.copy(b2).multiplyScalar(lam); vZ.addScaledVector(vX, -vZ.dot(vX)).normalize();
+  vY.crossVectors(vZ, vX);
+  b3.multiplyScalar(lam);
+  // OpenCV camera (y down, z forward) -> three.js camera (y up, z backward)
+  for (const v of [vX, vY, vZ, b3]) { v.y = -v.y; v.z = -v.z; }
+  if (!isFinite(b3.z) || b3.z > -0.5) return false;
+  basis.makeBasis(vX, vY, vZ); tQuat.setFromRotationMatrix(basis); tPos.copy(b3);
+  return true;
+}
+
+/* ---------- loop ---------- */
+let running = false, busy = false, hasPose = false, lastSeen = -10, now = 0, tRise = -1, prev = performance.now();
+const one = new THREE.Vector3();
+async function track() {
+  if (busy || !vw || video.readyState < 2) return;
+  busy = true;
+  try {
+    const c = await detect();
+    if (c && poseFrom(c)) {
+      if (!hasPose || now - lastSeen > 1.5) { pos.copy(tPos); quat.copy(tQuat); }
+      if (tRise < 0) tRise = 0;
+      hasPose = true; lastSeen = now;
+    }
+  } finally { busy = false; }
+}
+function frame(ts) {
+  requestAnimationFrame(frame);
+  const dt = Math.min((ts - prev) / 1000, 0.05); prev = ts;
+  if (!running) return;
+  now += dt; track();
+  const seen = hasPose && now - lastSeen < 1.2;
+  site.visible = seen;
+  hintEl.classList.toggle("hide", seen); frameEl.classList.toggle("hide", seen);
+  if (seen) {
+    const k = 1 - Math.pow(0.0005, dt);
+    pos.lerp(tPos, k); quat.slerp(tQuat, k);
+    tRise += dt;
+    const p = Math.min(tRise / 0.5, 1), s = Math.max(1 + 2.4 * Math.pow(p - 1, 3) + 1.4 * Math.pow(p - 1, 2), 0.001);
+    const rv = THREE.MathUtils.clamp((tRise - 0.3) / 2.6, 0, 1), ease = 1 - Math.pow(1 - rv, 3), hNow = ease * (BH + 0.25);
+    site.matrix.compose(pos, quat, one.setScalar(s)); site.matrixWorldNeedsUpdate = true;
+    clip.normal.set(0, -1, 0); clip.constant = rv >= 1 ? 1e4 : hNow + 0.001;
+    if (rv < 1) clip.applyMatrix4(site.matrix);
+    scanRing.position.y = hNow; scanRing.visible = rv > 0 && rv < 1;
+    scanRing.children.forEach((c, i) => { c.material.opacity = [1, 0.35, 0.35][i] * Math.min(1, (1 - rv) * 6); });
+  }
+  renderer.render(scene, camera);
+}
+requestAnimationFrame(frame);
+addEventListener("pointerdown", () => { if (running && tRise > 3.2) tRise = 0; });   // tap to replay the rise
+
+goBtn.addEventListener("click", async () => {
+  goBtn.disabled = true; errEl.classList.remove("show");
+  try {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error("no-camera-api");
+    await startCamera();
+    startEl.classList.add("hide"); hintEl.classList.remove("hide"); frameEl.classList.remove("hide");
+    running = true;
+  } catch (e) {
+    errEl.textContent = e && e.name === "NotAllowedError"
+      ? "Камерын зөвшөөрөл өгөөгүй байна. Хөтчийн тохиргооноос камерыг зөвшөөрөөд дахин оролдоно уу."
+      : "Камер асаах боломжгүй байна. Энэ хуудсыг Safari эсвэл Chrome хөтчөөр нээнэ үү.";
+    errEl.classList.add("show"); goBtn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>
